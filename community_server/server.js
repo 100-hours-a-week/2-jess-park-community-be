@@ -1,0 +1,448 @@
+import express from 'express';
+import cors from 'cors';
+import mysql from 'mysql2/promise';
+import dotenv from 'dotenv';
+
+// 환경변수 설정
+dotenv.config();
+
+const app = express();
+const PORT = process.env.PORT || 3002;
+
+// CORS 설정
+app.use(cors({ 
+    origin: ['http://localhost:3001', 'http://127.0.0.1:5500'],
+    credentials: true 
+}));
+app.use(express.json());
+
+// MariaDB 연결 설정 - 환경변수 사용
+const pool = mysql.createPool({
+    host: process.env.DB_HOST,
+    port: process.env.DB_PORT,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+    database: process.env.DB_NAME
+});
+
+// 게시글 테이블 생성 쿼리
+const createTableQuery = `
+    CREATE TABLE IF NOT EXISTS posts (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        title VARCHAR(255) NOT NULL,
+        content TEXT NOT NULL,
+        author VARCHAR(100) NOT NULL,
+        userId VARCHAR(50),
+        createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+`;
+
+// 테이블 생성
+pool.query(createTableQuery)
+    .then(() => console.log('posts 테이블 준비 완료'))
+    .catch(err => console.error('테이블 생성 오류:', err));
+
+// 댓글 테이블 생성 쿼리
+const createCommentsTableQuery = `
+    CREATE TABLE IF NOT EXISTS comments (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        post_id INT NOT NULL,
+        content TEXT NOT NULL,
+        author VARCHAR(100) NOT NULL,
+        userId VARCHAR(50),
+        createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE
+    )
+`;
+
+// 댓글 테이블 생성
+pool.query(createCommentsTableQuery)
+    .then(() => console.log('comments 테이블 준비 완료'))
+    .catch(err => console.error('테이블 생성 오류:', err));
+
+// 게시글 작성
+app.post('/api/posts', async (req, res) => {
+    try {
+        const { title, content, author } = req.body;
+        const userId = req.headers.userid;
+
+        console.log('게시글 작성 요청:', { title, content, author, userId });
+
+        const [result] = await pool.query(
+            'INSERT INTO posts (title, content, author, userId) VALUES (?, ?, ?, ?)',
+            [title, content, author, userId]
+        );
+
+        res.status(201).json({
+            success: true,
+            data: {
+                id: result.insertId,
+                title,
+                content,
+                author,
+                userId
+            }
+        });
+    } catch (error) {
+        console.error('게시글 작성 오류:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: '게시글 작성 실패' 
+        });
+    }
+});
+
+// 게시글 목록 조회
+app.get('/api/posts', async (req, res) => {
+    try {
+        // 로그 추가
+        console.log('게시글 목록 조회 요청 받음');
+        
+        const [rows] = await pool.query(`
+            SELECT 
+                p.*,
+                COUNT(c.id) as comment_count
+            FROM posts p
+            LEFT JOIN comments c ON p.id = c.post_id
+            GROUP BY p.id
+            ORDER BY p.createdAt DESC
+        `);
+        
+        console.log('조회된 게시글:', rows);
+
+        res.json({
+            success: true,
+            data: rows.map(post => ({
+                id: post.id,
+                title: post.title,
+                content: post.content,
+                author: post.author,
+                userId: post.userId,  // userId 추가
+                created_at: post.createdAt,
+                hits: post.hits || 0,
+                comment_count: post.comment_count || 0
+            }))
+        });
+    } catch (error) {
+        console.error('게시글 목록 조회 오류:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: '게시글 목록 조회 실패' 
+        });
+    }
+});
+
+// 게시글 상세 조회
+app.get('/api/posts/:id', async (req, res) => {
+    try {
+        console.log('상세 조회 요청:', {
+            id: req.params.id,
+            headers: req.headers,
+            url: req.url
+        });
+        
+        const [rows] = await pool.query('SELECT * FROM posts WHERE id = ?', [req.params.id]);
+        console.log('데이터베이스 조회 결과:', rows);
+        
+        if (rows.length === 0) {
+            console.log('게시글 없음');
+            return res.status(404).json({ 
+                success: false,
+                message: '게시글을 찾을 수 없습니다.' 
+            });
+        }
+
+        // 목록 조회와 동일한 구조로 응답
+        const responseData = {
+            success: true,
+            data: {
+                id: rows[0].id,
+                title: rows[0].title,
+                content: rows[0].content,
+                author: rows[0].author,
+                userId: rows[0].userId,
+                created_at: rows[0].createdAt,  // createdAt -> created_at
+                hits: rows[0].hits || 0,
+                comment_count: rows[0].comment_count || 0
+            }
+        };
+
+        console.log('응답 데이터:', responseData);
+        res.json(responseData);
+    } catch (error) {
+        console.error('게시글 조회 오류:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: '게시글 조회 실패' 
+        });
+    }
+});
+
+// 댓글 목록 조회
+app.get('/api/posts/:id/comments', async (req, res) => {
+    try {
+        const [comments] = await pool.query(
+            'SELECT * FROM comments WHERE post_id = ? ORDER BY createdAt DESC',
+            [req.params.id]
+        );
+        
+        res.json({
+            success: true,
+            data: comments.map(comment => ({
+                id: comment.id,
+                post_id: comment.post_id,
+                content: comment.content,
+                author: comment.author,
+                userId: comment.userId,
+                created_at: comment.createdAt
+            }))
+        });
+    } catch (error) {
+        console.error('댓글 목록 조회 오류:', error);
+        res.status(500).json({
+            success: false,
+            message: '댓글 목록 조회 실패'
+        });
+    }
+});
+
+// 댓글 작성
+app.post('/api/posts/:id/comments', async (req, res) => {
+    try {
+        const { commentContent } = req.body;
+        const userId = req.headers.userid;
+        const postId = req.params.id;
+        
+        // 작성자 정보 조회
+        const [users] = await pool.query(
+            'SELECT author FROM posts WHERE id = ?',
+            [postId]
+        );
+
+        const [result] = await pool.query(
+            'INSERT INTO comments (post_id, content, author, userId) VALUES (?, ?, ?, ?)',
+            [postId, commentContent, users[0].author, userId]
+        );
+
+        // 댓글 수 업데이트
+        await pool.query(
+            'UPDATE posts SET comment_count = (SELECT COUNT(*) FROM comments WHERE post_id = ?) WHERE id = ?',
+            [postId, postId]
+        );
+
+        res.status(201).json({
+            success: true,
+            data: {
+                id: result.insertId,
+                post_id: postId,
+                content: commentContent,
+                author: users[0].author,
+                userId: userId,
+                created_at: new Date()
+            }
+        });
+    } catch (error) {
+        console.error('댓글 작성 오류:', error);
+        res.status(500).json({
+            success: false,
+            message: '댓글 작성 실패'
+        });
+    }
+});
+
+// 댓글 수정
+app.put('/api/posts/:postId/comments/:commentId', async (req, res) => {
+    try {
+        const { commentContent } = req.body;
+        const userId = req.headers.userid;
+        const { postId, commentId } = req.params;
+
+        // 댓글 작성자 확인
+        const [comment] = await pool.query(
+            'SELECT * FROM comments WHERE id = ? AND post_id = ?',
+            [commentId, postId]
+        );
+
+        if (comment.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: '댓글을 찾을 수 없습니다.'
+            });
+        }
+
+        if (comment[0].userId !== userId) {
+            return res.status(403).json({
+                success: false,
+                message: '댓글 수정 권한이 없습니다.'
+            });
+        }
+
+        await pool.query(
+            'UPDATE comments SET content = ? WHERE id = ?',
+            [commentContent, commentId]
+        );
+
+        res.json({
+            success: true,
+            data: {
+                id: commentId,
+                post_id: postId,
+                content: commentContent,
+                author: comment[0].author,
+                userId: userId,
+                created_at: comment[0].createdAt
+            }
+        });
+    } catch (error) {
+        console.error('댓글 수정 오류:', error);
+        res.status(500).json({
+            success: false,
+            message: '댓글 수정 실패'
+        });
+    }
+});
+
+// 댓글 삭제
+app.delete('/api/posts/:postId/comments/:commentId', async (req, res) => {
+    try {
+        const userId = req.headers.userid;
+        const { postId, commentId } = req.params;
+
+        // 댓글 작성자 확인
+        const [comment] = await pool.query(
+            'SELECT * FROM comments WHERE id = ? AND post_id = ?',
+            [commentId, postId]
+        );
+
+        if (comment.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: '댓글을 찾을 수 없습니다.'
+            });
+        }
+
+        if (comment[0].userId !== userId) {
+            return res.status(403).json({
+                success: false,
+                message: '댓글 삭제 권한이 없습니다.'
+            });
+        }
+
+        await pool.query('DELETE FROM comments WHERE id = ?', [commentId]);
+
+        // 댓글 수 업데이트
+        await pool.query(
+            'UPDATE posts SET comment_count = (SELECT COUNT(*) FROM comments WHERE post_id = ?) WHERE id = ?',
+            [postId, postId]
+        );
+
+        res.json({
+            success: true,
+            message: '댓글이 삭제되었습니다.'
+        });
+    } catch (error) {
+        console.error('댓글 삭제 오류:', error);
+        res.status(500).json({
+            success: false,
+            message: '댓글 삭제 실패'
+        });
+    }
+});
+
+// 게시글 수정
+app.put('/api/posts/:id', async (req, res) => {
+    try {
+        const { title, content } = req.body;
+        const userId = req.headers.userid;
+        const postId = req.params.id;
+
+        // 게시글 작성자 확인
+        const [post] = await pool.query(
+            'SELECT * FROM posts WHERE id = ?',
+            [postId]
+        );
+
+        if (post.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: '게시글을 찾을 수 없습니다.'
+            });
+        }
+
+        if (post[0].userId !== userId) {
+            return res.status(403).json({
+                success: false,
+                message: '게시글 수정 권한이 없습니다.'
+            });
+        }
+
+        await pool.query(
+            'UPDATE posts SET title = ?, content = ? WHERE id = ?',
+            [title, content, postId]
+        );
+
+        res.json({
+            success: true,
+            message: '게시글이 수정되었습니다.'
+        });
+    } catch (error) {
+        console.error('게시글 수정 오류:', error);
+        res.status(500).json({
+            success: false,
+            message: '게시글 수정 실패'
+        });
+    }
+});
+
+// 게시글 삭제
+app.delete('/api/posts/:id', async (req, res) => {
+    try {
+        const userId = req.headers.userid;
+        const postId = req.params.id;
+
+        if (!userId || !postId) {
+            return res.status(400).json({
+                success: false,
+                message: '필수 파라미터가 누락되었습니다.'
+            });
+        }
+
+        // 게시글 작성자 확인
+        const [post] = await pool.query(
+            'SELECT * FROM posts WHERE id = ?',
+            [postId]
+        );
+
+        if (post.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: '게시글을 찾을 수 없습니다.'
+            });
+        }
+
+        if (post[0].userId !== userId) {
+            return res.status(403).json({
+                success: false,
+                message: '게시글 삭제 권한이 없습니다.'
+            });
+        }
+
+        await pool.query('DELETE FROM posts WHERE id = ?', [postId]);
+
+        res.json({
+            success: true,
+            message: '게시글이 삭제되었습니다.'
+        });
+    } catch (error) {
+        console.error('게시글 삭제 오류:', error);
+        res.status(500).json({
+            success: false,
+            message: '게시글 삭제 실패'
+        });
+    }
+});
+
+// 서버 시작
+app.listen(PORT, () => {
+    console.log(`메인 서버가 http://localhost:${PORT}에서 실행 중입니다`);
+});
