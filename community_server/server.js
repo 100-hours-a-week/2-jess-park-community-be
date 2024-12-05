@@ -60,6 +60,49 @@ pool.query(createCommentsTableQuery)
     .then(() => console.log('comments 테이블 준비 완료'))
     .catch(err => console.error('테이블 생성 오류:', err));
 
+// 조회 기록 테이블 생성 쿼리
+const createViewsTableQuery = `
+    CREATE TABLE IF NOT EXISTS post_views (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        post_id INT NOT NULL,
+        userId VARCHAR(50) NOT NULL,
+        createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE
+    )
+`;
+
+// 테이블 생성
+pool.query(createViewsTableQuery)
+    .then(() => console.log('post_views 테이블 준비 완료'))
+    .catch(err => console.error('테이블 생성 오류:', err));
+
+// 좋아요 테이블 생성 쿼리
+const createLikesTableQuery = `
+    CREATE TABLE IF NOT EXISTS post_likes (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        post_id INT NOT NULL,
+        userId VARCHAR(50) NOT NULL,
+        createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
+        UNIQUE KEY unique_like (post_id, userId)
+    )
+`;
+
+// 좋아요 테이블 생성
+pool.query(createLikesTableQuery)
+    .then(() => console.log('post_likes 테이블 준비 완료'))
+    .catch(err => console.error('테이블 생성 오류:', err));
+
+// 데이터베이스 연결 테스트
+pool.getConnection()
+    .then(connection => {
+        console.log('데이터베이스 연결 성공');
+        connection.release();
+    })
+    .catch(err => {
+        console.error('데이터베이스 연결 오류:', err);
+    });
+
 // 게시글 작성
 app.post('/api/posts', async (req, res) => {
     try {
@@ -72,6 +115,14 @@ app.post('/api/posts', async (req, res) => {
             'INSERT INTO posts (title, content, author, userId) VALUES (?, ?, ?, ?)',
             [title, content, author, userId]
         );
+
+        console.log('게시글 생성 결과:', {
+            insertId: result.insertId,
+            title,
+            content,
+            author,
+            userId
+        });
 
         res.status(201).json({
             success: true,
@@ -141,7 +192,19 @@ app.get('/api/posts/:id', async (req, res) => {
             url: req.url
         });
         
-        const [rows] = await pool.query('SELECT * FROM posts WHERE id = ?', [req.params.id]);
+        const [rows] = await pool.query(
+            `SELECT p.*, 
+                    COUNT(c.id) as comment_count,
+                    (SELECT COUNT(*) FROM post_views WHERE post_id = p.id) as hits,
+                    (SELECT COUNT(*) FROM post_likes WHERE post_id = p.id) as likeCount,
+                    EXISTS(SELECT 1 FROM post_likes WHERE post_id = p.id AND userId = ?) as isLiked
+             FROM posts p 
+             LEFT JOIN comments c ON p.id = c.post_id 
+             WHERE p.id = ?
+             GROUP BY p.id`,
+            [req.headers.userid, req.params.id]
+        );
+        
         console.log('데이터베이스 조회 결과:', rows);
         
         if (rows.length === 0) {
@@ -152,7 +215,6 @@ app.get('/api/posts/:id', async (req, res) => {
             });
         }
 
-        // 목록 조회와 동일한 구조로 응답
         const responseData = {
             success: true,
             data: {
@@ -161,9 +223,11 @@ app.get('/api/posts/:id', async (req, res) => {
                 content: rows[0].content,
                 author: rows[0].author,
                 userId: rows[0].userId,
-                created_at: rows[0].createdAt,  // createdAt -> created_at
+                created_at: rows[0].createdAt,
+                comment_count: rows[0].comment_count || 0,
                 hits: rows[0].hits || 0,
-                comment_count: rows[0].comment_count || 0
+                likeCount: rows[0].likeCount || 0,
+                isLiked: rows[0].isLiked === 1
             }
         };
 
@@ -438,6 +502,104 @@ app.delete('/api/posts/:id', async (req, res) => {
         res.status(500).json({
             success: false,
             message: '게시글 삭제 실패'
+        });
+    }
+});
+
+// 조회수 증가 API
+app.post('/api/posts/:id/views', async (req, res) => {
+    try {
+        const postId = req.params.id;
+        const userId = req.headers.userid;
+
+        // 최근 1시간 내 조회 기록 확인
+        const [recentViews] = await pool.query(
+            `SELECT id FROM post_views 
+             WHERE post_id = ? AND userId = ? 
+             AND createdAt > DATE_SUB(NOW(), INTERVAL 1 HOUR)`,
+            [postId, userId]
+        );
+
+        // 최근 조회 기록이 없으면 조회수 증가
+        if (recentViews.length === 0) {
+            // 조회 기록 추가
+            await pool.query(
+                'INSERT INTO post_views (post_id, userId) VALUES (?, ?)',
+                [postId, userId]
+            );
+
+            // 게시글 조회수 증가
+            await pool.query(
+                'UPDATE posts SET hits = hits + 1 WHERE id = ?',
+                [postId]
+            );
+        }
+
+        // 현재 조회수 조회
+        const [post] = await pool.query(
+            'SELECT hits FROM posts WHERE id = ?',
+            [postId]
+        );
+
+        res.json({
+            success: true,
+            data: { views: post[0]?.hits || 0 }
+        });
+    } catch (error) {
+        console.error('조회수 업데이트 오류:', error);
+        res.status(500).json({
+            success: false,
+            message: '조회수 업데이트에 실패했습니다.'
+        });
+    }
+});
+
+// 좋아요 토글 API
+app.post('/api/posts/:id/like', async (req, res) => {
+    try {
+        const postId = req.params.id;
+        const userId = req.headers.userid;
+
+        // 이미 좋아요를 눌렀는지 확인
+        const [existingLike] = await pool.query(
+            'SELECT * FROM post_likes WHERE post_id = ? AND userId = ?',
+            [postId, userId]
+        );
+
+        let likeCount;
+
+        if (existingLike.length > 0) {
+            // 좋아요 취소
+            await pool.query(
+                'DELETE FROM post_likes WHERE post_id = ? AND userId = ?',
+                [postId, userId]
+            );
+        } else {
+            // 좋아요 추가
+            await pool.query(
+                'INSERT INTO post_likes (post_id, userId) VALUES (?, ?)',
+                [postId, userId]
+            );
+        }
+
+        // 현재 좋아요 수 조회
+        const [result] = await pool.query(
+            'SELECT COUNT(*) as count FROM post_likes WHERE post_id = ?',
+            [postId]
+        );
+
+        likeCount = result[0].count;
+
+        res.json({
+            success: true,
+            likeCount,
+            isLiked: !existingLike.length
+        });
+    } catch (error) {
+        console.error('좋아요 처리 오류:', error);
+        res.status(500).json({
+            success: false,
+            message: '좋아요 처리에 실패했습니다.'
         });
     }
 });
