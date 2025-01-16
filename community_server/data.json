@@ -1,0 +1,45 @@
+{
+    "posts": [
+      {
+        "id": 1,
+        "title": "첫 번째 게시글",
+        "content": "안녕하세요! 첫 번째 게시글입니다.",
+        "author": "사용자1",
+        "userId": "user1",
+        "createdAt": "2023-01-01T12:00:00Z",
+        "hits": 10,
+        "comment_count": 2,
+        "like_count": 5
+      },
+      {
+        "id": 2,
+        "title": "두 번째 게시글",
+        "content": "두 번째 게시글입니다.",
+        "author": "사용자2",
+        "userId": "user2",
+        "createdAt": "2023-01-02T12:00:00Z",
+        "hits": 5,
+        "comment_count": 1,
+        "like_count": 3
+      }
+    ],
+    "comments": [
+      {
+        "id": 1,
+        "post_id": 1,
+        "content": "첫 번째 댓글입니다.",
+        "author": "댓글러1",
+        "userId": "commenter1",
+        "createdAt": "2023-01-01T13:00:00Z"
+      },
+      {
+        "id": 2,
+        "post_id": 1,
+        "content": "두 번째 댓글입니다.",
+        "author": "댓글러2",
+        "userId": "commenter2",
+        "createdAt": "2023-01-01T14:00:00Z"
+      }
+    ]
+  }
+  
