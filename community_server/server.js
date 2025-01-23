@@ -1,25 +1,52 @@
 import express from 'express';
+import session from 'express-session'; 
+import helmet from 'helmet';
 import cors from 'cors';
+import timeout from 'connect-timeout';
+import rateLimit from 'express-rate-limit';
 import fs from 'fs/promises';
 import { fileURLToPath } from 'url';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
+import jwt from 'jsonwebtoken';
 
 const app = express();
 const PORT = 3002;
+
 
 // 파일 경로 설정
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const postsFilePath = path.join(__dirname, 'data', 'posts.json');
+const usersFilePath = path.join(__dirname, 'data', 'users.json');
 
-// CORS 설정
-const allowedOrigins = ['http://localhost:3001', 'http://127.0.0.1:5500'];
-app.use(cors({ origin: allowedOrigins, credentials: true }));
-
-// Express 미들웨어
-app.use(express.json());
+// 보안 및 미들웨어 설정
+app.use(helmet());
+app.use(cors({ origin: ['http://localhost:3001', 'http://127.0.0.1:5500'], credentials: true }));
+app.use(timeout('10s'));
 app.use(express.static(path.join(__dirname, 'public')));
+
+
+// JWT 인증 미들웨어
+const isAuthenticated = (req, res, next) => {
+    const authHeader = req.headers['authorization'];
+    if (!authHeader) {
+        return res.status(401).json({ success: false, message: '인증이 필요합니다.' });
+    }
+
+    const token = authHeader.split(' ')[1]; // "Bearer TOKEN" 형식이므로 분리
+    if (!token) {
+        return res.status(401).json({ success: false, message: '유효하지 않은 토큰입니다.' });
+    }
+
+    try {
+        const decoded = jwt.verify(token, SECRET_KEY);
+        req.user = decoded; // 사용자 정보 저장
+        next();
+    } catch (error) {
+        return res.status(401).json({ success: false, message: '토큰 검증 실패' });
+    }
+};
 
 // 초기 데이터 보장
 const ensurePostsFile = async () => {
@@ -29,28 +56,13 @@ const ensurePostsFile = async () => {
         try {
             await fs.access(postsFilePath);
         } catch {
-            const defaultPosts = [
-                {
-                    id: 'board',
-                    title: '게시글 제목',
-                    content: '게시글 내용입니다.',
-                    author: '관리자',
-                    createdAt: new Date().toISOString(),
-                    likes: 0,
-                    comments: [],
-                    usersLikes: [], // 좋아요 누른 사용자 기록 추가
-                    commentsCount: 0, // 댓글 수 추가
-                },
-            ];
-            await fs.writeFile(
-                postsFilePath,
-                JSON.stringify(defaultPosts, null, 2),
-            );
+            await fs.writeFile(postsFilePath, JSON.stringify([], null, 2)); // ✅ 초기화
         }
     } catch (error) {
         console.error('Error initializing posts file:', error.message);
     }
 };
+
 
 // 데이터 로드 및 저장
 const loadPosts = async () => {
@@ -66,6 +78,31 @@ const loadPosts = async () => {
         return [];
     }
 };
+
+
+
+app.post('/api/login', (req, res) => {
+    const { username } = req.body;
+    console.log("🔵 [서버] 로그인 시도:", username);
+
+    req.session.user = { nickname: username };
+    console.log("✅ [서버] 로그인 성공, 세션 저장됨:", req.session.user);
+    
+    res.json({ success: true, user: req.session.user });
+});
+
+app.get('/api/session/user', (req, res) => {
+    console.log("🔴 [서버] 세션 체크 요청 들어옴");
+    console.log("🟡 [서버] 현재 세션 정보:", req.session);
+
+    if (!req.session.user) {
+        console.log("❌ [서버] 세션 없음, 로그인 필요");
+        return res.status(401).json({ success: false, message: '로그인이 필요합니다.' });
+    }
+
+    console.log("✅ [서버] 세션 유지 중:", req.session.user);
+    res.json({ success: true, user: req.session.user });
+});
 
 const savePosts = async posts => {
     try {
@@ -97,28 +134,53 @@ const findCommentById = (post, commentId) => {
 };
 
 // API 엔드포인트
-app.get('/api/posts', async (req, res) => {
-    const { start = 0, limit = 10 } = req.query;
-    const posts = await loadPosts();
-    const startIndex = Math.max(0, parseInt(start, 10));
-    const limitCount = Math.min(100, Math.max(1, parseInt(limit, 10)));
-    res.json({
-        success: true,
-        data: posts.slice(startIndex, startIndex + limitCount),
-        hasMore: startIndex + limitCount < posts.length,
-    });
+app.get('/api/session/user', (req, res) => {
+    if (!req.session.user) {
+        return res.status(401).json({ success: false, message: '로그인이 필요합니다.' });
+    }
+    res.json({ success: true, user: req.session.user });
 });
 
-app.post('/api/posts', async (req, res) => {
-    const { title, content, author } = req.body;
-    if (!title || !content || !author) {
-        return res.status(400).json({
-            success: false,
-            message: '제목, 내용, 작성자를 입력해주세요.',
-        });
+
+const postLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15분
+    max: 10, // 글 작성, 좋아요 최대 10번만 가능
+    message: { success: false, message: "요청이 너무 많습니다. 나중에 다시 시도하세요." },
+});
+
+const getRateLimiter = rateLimit({
+    windowMs: 10 * 1000, // 10초
+    max: 10, // 10초 동안 최대 10번 요청 가능
+    message: { success: false, message: "요청이 너무 많습니다. 잠시 후 다시 시도해주세요." },
+});
+
+app.get('/api/posts', getRateLimiter, async (req, res) => {
+    const { start = 0, limit = 10 } = req.query;
+
+    const posts = await loadPosts();
+    const sortedPosts = posts.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    const paginatedPosts = sortedPosts.slice(start, start + limit);
+
+    res.json({ data: paginatedPosts, hasMore: start + limit < posts.length });
+});
+
+
+// 글 작성 요청에만 레이트 리미트 적용
+// 게시글 작성 제한 (10분에 5개)
+const modifyRateLimiter = rateLimit({
+    windowMs: 10 * 60 * 1000,
+    max: 5,
+    message: "게시글 작성이 너무 많습니다. 10분 후 다시 시도하세요."
+});
+
+app.post('/api/posts', isAuthenticated, modifyRateLimiter, async (req, res) => {
+    const { title, content } = req.body;
+    const author = req.user.nickname; // JWT에서 사용자 정보 가져오기
+
+    if (!title || !content) {
+        return res.status(400).json({ success: false, message: "제목과 내용을 입력하세요." });
     }
 
-    // 게시글 생성 시 필요한 newPost 정의
     const newPost = {
         id: uuidv4(),
         title,
@@ -127,9 +189,7 @@ app.post('/api/posts', async (req, res) => {
         createdAt: new Date().toISOString(),
         likes: 0,
         comments: [],
-        usersLikes: [],
-        commentsCount: 0,
-        views: 0, // 조회수 초기화
+        views: 0,
     };
 
     const posts = await loadPosts();
@@ -166,17 +226,10 @@ app.put('/api/posts/:id', async (req, res) => {
     res.json({ success: true, data: post });
 });
 
-app.get('/api/posts/:id', async (req, res) => {
-    const { post } = await findPostById(req.params.id);
 
-    if (!post) {
-        return res
-            .status(404)
-            .json({ success: false, message: '게시글을 찾을 수 없습니다.' });
-    }
 
-    res.json({ success: true, data: post });
-});
+
+
 
 // 조회수 요청 제한을 위한 데이터 저장소
 const viewRateLimitMap = new Map();
@@ -184,15 +237,14 @@ const viewRateLimitMap = new Map();
 app.patch('/api/posts/:id/views', async (req, res) => {
     const { id } = req.params;
     const userAgent = req.headers['user-agent'];
-    const userKey = userAgent || 'unknown';
+    const userIP = req.ip; // 사용자 IP 가져오기
+    const userKey = `${userIP}-${userAgent || 'unknown'}`; // IP + User-Agent 조합으로 키 생성
     const now = Date.now();
-    const LIMIT_DURATION = 5 * 60 * 1000; // 5분 동안 중복 조회수 제한
+    const LIMIT_DURATION = 1 * 60 * 1000; // 1분 동안 중복 조회 방지 (기존 5분 → 1분으로 변경)
 
     const { post, posts, postIndex } = await findPostById(id);
     if (!post) {
-        return res
-            .status(404)
-            .json({ success: false, message: '게시글을 찾을 수 없습니다.' });
+        return res.status(404).json({ success: false, message: '게시글을 찾을 수 없습니다.' });
     }
 
     if (!viewRateLimitMap.has(userKey)) {
@@ -203,10 +255,7 @@ app.patch('/api/posts/:id/views', async (req, res) => {
     const lastViewTime = userViews.get(id);
 
     if (lastViewTime && now - lastViewTime < LIMIT_DURATION) {
-        return res.status(429).json({
-            success: false,
-            message: '조회수는 일정 시간 내 중복 증가할 수 없습니다.',
-        });
+        return res.status(200).json({ success: false, message: '조회수는 일정 시간 후 다시 증가할 수 있습니다.' });
     }
 
     try {
@@ -220,12 +269,10 @@ app.patch('/api/posts/:id/views', async (req, res) => {
         res.json({ success: true, data: post });
     } catch (error) {
         console.error('Error updating view count:', error);
-        res.status(500).json({
-            success: false,
-            message: '조회수를 업데이트할 수 없습니다.',
-        });
+        res.status(500).json({ success: false, message: '조회수를 업데이트할 수 없습니다.' });
     }
 });
+
 
 app.delete('/api/posts/:id', async (req, res) => {
     const { post, posts, postIndex } = await findPostById(req.params.id);
@@ -409,6 +456,7 @@ app.delete('/api/posts/:id/comments/:commentId', async (req, res) => {
     await savePosts(posts);
     res.json({ success: true, message: '댓글이 삭제되었습니다.' });
 });
+
 
 // 서버 시작
 app.listen(PORT, async () => {
