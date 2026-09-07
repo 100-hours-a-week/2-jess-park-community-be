@@ -1,1 +1,26 @@
-[]
+[
+  {
+    "id": "5371938c-37bf-4d32-8214-7f17118ac0f3",
+    "title": "1234",
+    "content": "1",
+    "author": "test1",
+    "authorId": 1780381198327,
+    "createdAt": "2026-06-12T05:47:04.531Z",
+    "likes": 1,
+    "comments": [
+      {
+        "id": "057478df-b52c-4f75-8f9f-7817a370e0a2",
+        "content": "123",
+        "author": "test2",
+        "authorId": 1781242076596,
+        "createdAt": "2026-06-12T05:47:28.684Z",
+        "updatedAt": "2026-06-12T05:51:29.336Z"
+      }
+    ],
+    "views": 3,
+    "usersLikes": [
+      "test1"
+    ],
+    "commentsCount": 1
+  }
+]

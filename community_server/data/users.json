@@ -1,0 +1,16 @@
+[
+  {
+    "id": 1780381198327,
+    "email": "Test1@Test1",
+    "password": "$2a$10$xLMNTrM.PwZDCc8/e01TV./sxrN6wqqsal9.r7cjWMM6I9uRiKuau",
+    "nickname": "test1",
+    "profile": null
+  },
+  {
+    "id": 1781242076596,
+    "email": "Test2@Test2",
+    "password": "$2a$10$aMg8p36Jpr0Wb1D9vP1gA.aqr.94O/wimpz8OshCFYsnvQkCUnS3i",
+    "nickname": "test2",
+    "profile": null
+  }
+]
